@@ -1,12 +1,10 @@
-# IHSG Swing Trading System (v1.0.0)
+# IHSG Swing Trading System (v2.0.0)
 
 A highly rigorous, accuracy-first swing trading application specifically designed for the Indonesian Stock Exchange (IHSG).
 
-This system automates daily data ingestion, technical scanning, market regime detection, entry signal generation, and risk management through a structured, multi-phase architecture.
+This system automates daily data ingestion, technical scanning, market regime detection, entry signal generation, risk management, backtesting, and live execution through a structured, 7-phase architecture.
 
 ## 🏗️ Architecture
-
-The system was built in five distinct phases, resulting in a robust, object-oriented pipeline:
 
 1. **Infrastructure & Data Engineering (`core/ingestion.py`, `core/data_cleaner.py`)**
    - Ingests daily OHLCV data for 591 curated IHSG tickers.
@@ -39,13 +37,22 @@ The system was built in five distinct phases, resulting in a robust, object-orie
    - Generates formatted console reports and a dark-themed `.html` dashboard showing portfolio heat and actionable Trade Cards.
    - CRITICAL-level alert logging for new signals.
 
+6. **Backtesting Engine (`core/backtester.py`, `core/backtest_report.py`)**
+   - Event-driven replay through the same scanner + engines + risk manager. Zero look-ahead bias.
+   - Automatic 3.5-year Training / 1.5-year Blind Test split.
+   - Hardcoded slippage (0.15% per side) and IDX broker fees (0.15% buy, 0.25% sell).
+   - **Report Card**: Win Rate, Expected Value, Max Drawdown (⚠️ >15%), Sharpe Ratio, Profit Factor (⚠️ <1.5), Win/Loss Streaks.
+
+7. **Live Execution & Failsafes (`core/broker.py`, `core/failsafes.py`, `core/bracket_order.py`)**
+   - Abstract broker adapter with `SimulatedBroker` for testing.
+   - **Fat Finger Guard**: Hard limit of 50,000 shares / IDR 50M per order.
+   - **Daily Drawdown Breaker**: Halts all trading if the account drops 3% in a single day.
+   - **Bracket Orders**: Sends Buy + Stop-Loss + Take-Profit (3x ATR) simultaneously.
+   - Cron-ready execution CLI scheduled for 15:50 WIB.
+
 ## 🚀 Usage
 
-The system exposes five modular CLI entry points, plus the unified daily workflow.
-
 ### 1. Unified Daily Workflow (Start Here)
-
-Runs the entire daily routine: Regime fetch → Universe Scan → Risk/Portfolio check → Console/HTML Reports → Alerts.
 
 ```powershell
 python -m scripts.daily
@@ -58,32 +65,28 @@ _Options:_
 - `--no-html` : Skip generating the HTML dashboard.
 - `--capital 200000000` : Custom portfolio capital.
 
-### 2. Individual Subsystems
-
-**Phase 1: Ingest Data**
+### 2. Backtesting
 
 ```powershell
-python -m scripts.ingest
-python -m scripts.ingest --resume  # Skip already downloaded tickers today
+python -m scripts.backtest
+python -m scripts.backtest --tickers BBCA BBRI ASII TLKM UNVR
+python -m scripts.backtest --capital 200000000
 ```
 
-**Phase 2: Raw Scanner**
+### 3. Live Execution
 
 ```powershell
-python -m scripts.scan
+python -m scripts.execute --dry-run    # Simulate without placing orders
+python -m scripts.execute              # Live mode (requires broker setup)
 ```
 
-**Phase 3: Market Regime Check**
+### 4. Individual Subsystems
 
 ```powershell
-python -m scripts.regime
-```
-
-**Phase 4: Risk Calculator**
-
-```powershell
-python -m scripts.risk --ticker ASII
-python -m scripts.risk --portfolio  # View open positions & heat
+python -m scripts.ingest               # Phase 1: Ingest OHLCV data
+python -m scripts.scan                 # Phase 2: Raw scanner
+python -m scripts.regime               # Phase 3: Market regime check
+python -m scripts.risk --ticker ASII   # Phase 4: Risk calculator
 ```
 
 ## 🛠️ GitHub Actions Automation
