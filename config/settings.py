@@ -152,5 +152,22 @@ REGIME_RISK_MULTIPLIER: dict[str, float] = {
 # IDX lot size (shares must be bought in multiples of this)
 IDX_LOT_SIZE: int = 100
 
+# ─── Phase 6: Backtesting ─────────────────────────────────────────────────────
 
+BACKTEST_YEARS: int = 5
+BACKTEST_TRAIN_YEARS: float = 3.5
+BACKTEST_SLIPPAGE_PCT: float = 0.15     # 0.15% per side
+BACKTEST_FEE_BUY_PCT: float = 0.15      # IDX broker buy fee
+BACKTEST_FEE_SELL_PCT: float = 0.25     # IDX broker sell fee (includes tax)
+BACKTEST_INITIAL_CAPITAL: float = 5_000_000
+MAX_DRAWDOWN_THRESHOLD: float = 15.0    # Report card red flag
+MIN_PROFIT_FACTOR: float = 1.5          # Report card threshold
+
+# ─── Phase 7: Live Execution ──────────────────────────────────────────────────
+
+FAT_FINGER_MAX_SHARES: int = 1000           # Hard limit per order
+FAT_FINGER_MAX_VALUE_IDR: float = 2_500_000  # Hard limit per order value
+DAILY_DRAWDOWN_HALT_PCT: float = 3.0          # Halt trading if account drops 3%
+EXECUTION_SCHEDULE_WIB: str = "15:50"         # Generate execution list at this time
+BRACKET_ORDER_TP_ATR_MULTIPLIER: float = 3.0  # Take-profit at 3x ATR from entry
 
