@@ -31,11 +31,12 @@ from config.settings import (
     BOW_STOCH_RSI_OVERSOLD,
     BOW_STOCH_RSI_PERIOD,
     BOW_VOLUME_CLIMAX_RATIO,
-    BREAKOUT_CONSOLIDATION_DAYS,
     BREAKOUT_MAX_SPREAD_PCT,
     BREAKOUT_VOLUME_THRESHOLD,
     FVG_LOW_VOLUME_RATIO,
     REGIME_SMA_SHORT,
+    WYCKOFF_SPRING_LOOKBACK,
+    WYCKOFF_SPRING_VOLUME_RATIO,
 )
 from core.indicators import (
     atr,
@@ -462,6 +463,89 @@ class BuyingOnWeaknessEngine(BaseEngine):
         )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ENGINE 4: WYCKOFF PHASE C SPRING
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class WyckoffSpringEngine(BaseEngine):
+    """
+    Wyckoff Phase C Spring Entry Engine.
+
+    Identifies a false breakdown (spring) below a 60-day trading range low.
+    Triggers a buy ONLY when the daily low sweeps strictly below the 60-day minimum,
+    but the daily close recovers above that minimum line on climax volume.
+
+    Priority: 1
+    Allowed regimes: CAUTION (Mean-Reverting)
+    """
+
+    name = "wyckoff_spring"
+    priority = 1
+
+    def scan(
+        self,
+        df: pd.DataFrame,
+        ticker: str,
+        regime: RegimeSnapshot,
+    ) -> EntrySignal | None:
+        if not regime.allows_engine(self.name):
+            return None
+
+        if len(df) < WYCKOFF_SPRING_LOOKBACK + 5:
+            return None
+
+        last = df.iloc[-1]
+        last_low = float(last["Low"])
+        last_close = float(last["Close"])
+
+        # Lookback window BEFORE today
+        lookback = df.iloc[-(WYCKOFF_SPRING_LOOKBACK + 1):-1]
+        
+        if len(lookback) < WYCKOFF_SPRING_LOOKBACK:
+            return None
+
+        min_60d = float(lookback["Low"].min())
+
+        # 1. Sweep strictly below 60-day minimum
+        if last_low >= min_60d:
+            return None
+
+        # 2. Close recovers above 60-day minimum
+        if last_close <= min_60d:
+            return None
+
+        # 3. Climax volume (> 200% average)
+        vol_ratio_series = volume_ratio(df, period=20)
+        last_vol_ratio = float(vol_ratio_series.iloc[-1]) if not pd.isna(vol_ratio_series.iloc[-1]) else 1.0
+
+        if last_vol_ratio < WYCKOFF_SPRING_VOLUME_RATIO:
+            return None
+
+        # Signal confirmed
+        atr_series = atr(df, period=ATR_PERIOD)
+        last_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+
+        score = self.priority * last_vol_ratio
+
+        return EntrySignal(
+            engine=self.name,
+            ticker=ticker,
+            price=round(last_close, 2),
+            score=round(score, 2),
+            priority=self.priority,
+            details={
+                "lookback_days": WYCKOFF_SPRING_LOOKBACK,
+                "range_low": round(min_60d, 2),
+                "sweep_low": round(last_low, 2),
+                "sweep_depth_pct": round(((min_60d - last_low) / min_60d) * 100, 2),
+                "volume_ratio": round(last_vol_ratio, 2),
+                "atr": round(last_atr, 2),
+            },
+        )
+
+
+
 # ─── Engine Registry ─────────────────────────────────────────────────────────
 
 # Ordered by priority (highest first) — this is the evaluation order
@@ -469,6 +553,7 @@ ALL_ENGINES: list[BaseEngine] = [
     FVGPullbackEngine(),
     MomentumBreakoutEngine(),
     BuyingOnWeaknessEngine(),
+    WyckoffSpringEngine(),
 ]
 
 

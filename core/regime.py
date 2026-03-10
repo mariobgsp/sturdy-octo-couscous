@@ -26,7 +26,7 @@ from config.settings import (
     REGIME_SMA_LONG,
     REGIME_SMA_SHORT,
 )
-from core.indicators import atr, sma
+from core.indicators import atr, sma, hurst_exponent
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,9 @@ class RegimeType(Enum):
 
 # Which engines are allowed in each regime
 _ENGINE_PERMISSIONS: dict[RegimeType, set[str]] = {
-    RegimeType.BULL: {"fvg_pullback", "momentum_breakout", "buying_on_weakness"},
-    RegimeType.CAUTION: {"fvg_pullback", "buying_on_weakness"},
-    RegimeType.BEAR: {"buying_on_weakness"},
+    RegimeType.BULL: {"fvg_pullback", "momentum_breakout"},
+    RegimeType.CAUTION: {"wyckoff_spring"},
+    RegimeType.BEAR: set(),
 }
 
 
@@ -56,6 +56,7 @@ class RegimeSnapshot:
     sma_short: float
     sma_long: float
     atr_value: float
+    hurst_value: float
     as_of_date: str
 
     def allows_engine(self, engine_name: str) -> bool:
@@ -69,6 +70,7 @@ class RegimeSnapshot:
             f"SMA({REGIME_SMA_SHORT}): {self.sma_short:,.0f} | "
             f"SMA({REGIME_SMA_LONG}): {self.sma_long:,.0f} | "
             f"ATR({REGIME_ATR_PERIOD}): {self.atr_value:,.0f} | "
+            f"Hurst(100): {self.hurst_value:.2f} | "
             f"As-of: {self.as_of_date}"
         )
 
@@ -130,7 +132,7 @@ class MarketRegime:
                 # Fallback to CAUTION if data is insufficient
                 self._snapshot = RegimeSnapshot(
                     regime=RegimeType.CAUTION,
-                    close=0, sma_short=0, sma_long=0, atr_value=0,
+                    close=0, sma_short=0, sma_long=0, atr_value=0, hurst_value=0.5,
                     as_of_date="N/A (insufficient data)",
                 )
                 return
@@ -148,13 +150,19 @@ class MarketRegime:
             last_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
             as_of = raw.index[-1].strftime("%Y-%m-%d")
 
-            # Classify regime
-            if last_close > last_sma_short and last_sma_short > last_sma_long:
-                regime = RegimeType.BULL
-            elif last_close > last_sma_long:
+            # Calculate Hurst exponent on last 100 days
+            if len(raw) >= 100:
+                hurst_val = hurst_exponent(raw["Close"].tail(100), max_lag=20)
+            else:
+                hurst_val = 0.5
+                
+            # Classify regime based on Hurst Exponent
+            if 0.45 <= hurst_val <= 0.55:
+                regime = RegimeType.BEAR
+            elif hurst_val < 0.45:
                 regime = RegimeType.CAUTION
             else:
-                regime = RegimeType.BEAR
+                regime = RegimeType.BULL
 
             self._snapshot = RegimeSnapshot(
                 regime=regime,
@@ -162,6 +170,7 @@ class MarketRegime:
                 sma_short=round(last_sma_short, 2),
                 sma_long=round(last_sma_long, 2),
                 atr_value=round(last_atr, 2),
+                hurst_value=round(hurst_val, 2),
                 as_of_date=as_of,
             )
 
@@ -172,7 +181,7 @@ class MarketRegime:
             # Fallback to CAUTION on error — conservative but not fully frozen
             self._snapshot = RegimeSnapshot(
                 regime=RegimeType.CAUTION,
-                close=0, sma_short=0, sma_long=0, atr_value=0,
+                close=0, sma_short=0, sma_long=0, atr_value=0, hurst_value=0.5,
                 as_of_date=f"ERROR: {e}",
             )
 

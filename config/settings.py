@@ -121,6 +121,25 @@ BOW_MACD_SLOW: int = 26
 BOW_MACD_SIGNAL: int = 9
 BOW_MACD_DIVERGENCE_LOOKBACK: int = 20  # Lookback period for price lower low
 
+# Engine 4: Wyckoff Phase C Spring
+WYCKOFF_SPRING_LOOKBACK: int = 60
+WYCKOFF_SPRING_VOLUME_RATIO: float = 2.0
+
+# Scanner Wait: Wyckoff Phase B Accumulation
+WYCKOFF_PHASE_B_VAR_LOOKBACK: int = 60
+WYCKOFF_PHASE_B_VAR_PERCENTILE: float = 10.0
+
+# Scanner Wait: VSA Squat Candle
+VSA_SQUAT_VOL_RATIO: float = 2.0
+VSA_SQUAT_EFFICIENCY_PERCENTILE: float = 10.0
+VSA_SQUAT_PERCENTILE_LOOKBACK: int = 60
+
+# Predictor: Ridge Regression
+RIDGE_CV_SPLITS: int = 5
+RIDGE_LOOKAHEAD: int = 5
+RIDGE_TRAIN_WINDOW: int = 252 # 1 year data roughly
+
+
 # ─── Phase 4: Risk Management ────────────────────────────────────────────────
 
 # Default starting capital (IDR)
