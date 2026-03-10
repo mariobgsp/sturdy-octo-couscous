@@ -398,3 +398,87 @@ def macd(
     macd_hist = macd_line - signal_line
 
     return macd_line, signal_line, macd_hist
+
+
+def rolling_percentile(series: pd.Series, window: int) -> pd.Series:
+    """
+    Calculate the rolling rank percentile of the current value within its historical window.
+    
+    Returns 0-100 scale.
+    """
+    # Uses Pandas built-in rolling rank with pct=True
+    return series.rolling(window=window).rank(pct=True) * 100.0
+
+
+def cvd(df: pd.DataFrame) -> pd.Series:
+    """
+    Cumulative Volume Delta (CVD).
+    
+    Positive volume when close > prev_close, negative when close < prev_close.
+    """
+    prev_close = df["Close"].shift(1)
+    direction = np.sign(df["Close"] - prev_close)
+    vol_delta = df["Volume"] * direction
+    return vol_delta.cumsum()
+
+
+def efficiency_ratio(df: pd.DataFrame) -> pd.Series:
+    """
+    Efficiency Ratio = (High - Low) / Volume
+    
+    Measures how much volume is required to move the price.
+    """
+    hl_spread = df["High"] - df["Low"]
+    vol = df["Volume"].replace(0, np.nan)
+    return hl_spread / vol
+
+
+def hurst_exponent(series: pd.Series, max_lag: int = 20) -> float:
+    """
+    Calculate the Hurst Exponent of a time series.
+    
+    H ~ 0.5: Random Walk
+    H < 0.5: Mean Reverting
+    H > 0.5: Trending
+    """
+    vals = series.values
+    if len(vals) < max_lag * 2:
+        return 0.5  # default to random walk if not enough data
+        
+    lags = range(2, max_lag)
+    
+    # Calculate the standard deviation of the difference
+    tau = []
+    for lag in lags:
+        diff = np.subtract(vals[lag:], vals[:-lag])
+        std = np.std(diff)
+        tau.append(np.sqrt(std) if std > 0 else 1e-8)
+        
+    poly = np.polyfit(np.log(list(lags)), np.log(tau), 1)
+    return poly[0] * 2.0
+
+
+def closing_range(df: pd.DataFrame) -> pd.Series:
+    """Closing Range = (Close - Low) / (High - Low)"""
+    hl_range = (df["High"] - df["Low"]).replace(0, np.nan)
+    return (df["Close"] - df["Low"]) / hl_range
+
+
+def cmf(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Chaikin Money Flow"""
+    mfv = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"]).replace(0, np.nan)
+    mf_vol = mfv * df["Volume"]
+    return mf_vol.rolling(window=period).sum() / df["Volume"].rolling(window=period).sum()
+
+
+def vpt(df: pd.DataFrame) -> pd.Series:
+    """Volume Price Trend"""
+    prev_close = df["Close"].shift(1).replace(0, np.nan)
+    vpt_change = df["Volume"] * (df["Close"] - prev_close) / prev_close
+    return vpt_change.cumsum()
+
+
+def roc(series: pd.Series, period: int = 3) -> pd.Series:
+    """Rate of Change"""
+    prev = series.shift(period).replace(0, np.nan)
+    return (series - prev) / prev

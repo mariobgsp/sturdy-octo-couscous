@@ -266,6 +266,7 @@ class Backtester:
                         REGIME_SMA_LONG,
                         REGIME_SMA_SHORT,
                     )
+                    from core.indicators import atr, sma, hurst_exponent
                     sma_short = sma(ihsg_slice["Close"], REGIME_SMA_SHORT)
                     sma_long = sma(ihsg_slice["Close"], REGIME_SMA_LONG)
                     atr_s = atr(ihsg_slice, REGIME_ATR_PERIOD)
@@ -274,27 +275,33 @@ class Backtester:
                     ll = float(sma_long.iloc[-1])
                     la = float(atr_s.iloc[-1]) if not pd.isna(atr_s.iloc[-1]) else 0.0
 
-                    if lc > ls and ls > ll:
-                        r = RegimeType.BULL
-                    elif lc > ll:
+                    if len(ihsg_slice) >= 100:
+                        hurst_val = hurst_exponent(ihsg_slice["Close"].tail(100), max_lag=20)
+                    else:
+                        hurst_val = 0.5
+                        
+                    if 0.45 <= hurst_val <= 0.55:
+                        r = RegimeType.BEAR
+                    elif hurst_val < 0.45:
                         r = RegimeType.CAUTION
                     else:
-                        r = RegimeType.BEAR
+                        r = RegimeType.BULL
 
                     regime = RegimeSnapshot(
                         regime=r, close=round(lc, 2),
                         sma_short=round(ls, 2), sma_long=round(ll, 2),
                         atr_value=round(la, 2),
+                        hurst_value=round(hurst_val, 2),
                         as_of_date=today.strftime("%Y-%m-%d"),
                     )
                 else:
                     regime = RegimeSnapshot(
-                        "CAUTION", 0, 0, 0, 0,
+                        RegimeType.CAUTION, 0, 0, 0, 0, 0.5,
                         today.strftime("%Y-%m-%d"),
                     )
             else:
                 regime = RegimeSnapshot(
-                    "CAUTION", 0, 0, 0, 0,
+                    RegimeType.CAUTION, 0, 0, 0, 0, 0.5,
                     today.strftime("%Y-%m-%d"),
                 )
 

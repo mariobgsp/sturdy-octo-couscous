@@ -36,14 +36,22 @@ from config.settings import (
     PENNY_STOCK_THRESHOLD,
     SMA_200_LOOKBACK,
     TRADE_BUCKET_MAX_PICKS,
+    WYCKOFF_PHASE_B_VAR_LOOKBACK,
+    WYCKOFF_PHASE_B_VAR_PERCENTILE,
+    VSA_SQUAT_VOL_RATIO,
+    VSA_SQUAT_EFFICIENCY_PERCENTILE,
+    VSA_SQUAT_PERCENTILE_LOOKBACK,
 )
 from core.database import ParquetStore
 from core.engines import EntrySignal, run_all_engines
 from core.indicators import (
     adtv,
     atr,
+    cvd,
     detect_fvg,
+    efficiency_ratio,
     is_tight_consolidation,
+    rolling_percentile,
     rsi,
     sma,
     volume_ratio,
@@ -425,6 +433,49 @@ class MasterScanner:
         if fvg_entry:
             return fvg_entry
 
+        # Check 3: Wyckoff Phase B Accumulation
+        # 60-day rolling variance of close drops into historical bottom 10th percentile
+        # AND CVD is strictly positive
+        if len(df) >= max(WYCKOFF_PHASE_B_VAR_LOOKBACK * 2, 60):
+            var_60d = df["Close"].rolling(window=WYCKOFF_PHASE_B_VAR_LOOKBACK).var()
+            var_pctile = rolling_percentile(var_60d, window=252)
+            cvd_series = cvd(df)
+            
+            last_var_pctile = float(var_pctile.iloc[-1]) if not pd.isna(var_pctile.iloc[-1]) else 100.0
+            last_cvd = float(cvd_series.iloc[-1]) if not pd.isna(cvd_series.iloc[-1]) else 0.0
+            
+            if last_var_pctile <= WYCKOFF_PHASE_B_VAR_PERCENTILE and last_cvd > 0.0:
+                return WaitEntry(
+                    ticker=ticker,
+                    condition="wyckoff_phase_b",
+                    details={
+                        "var_percentile": round(last_var_pctile, 2),
+                        "cvd": round(last_cvd, 2),
+                        "price": round(float(df["Close"].iloc[-1]), 2),
+                    },
+                )
+
+        # Check 4: Smart Money Proxy / VSA (Squat Candles)
+        # Volume > 200% of 20-day average, Efficiency Ratio in bottom 10th percentile
+        if len(df) >= max(VSA_SQUAT_PERCENTILE_LOOKBACK * 2, 60):
+            vol_ratio = volume_ratio(df, period=20)
+            eff_ratio = efficiency_ratio(df)
+            eff_pctile = rolling_percentile(eff_ratio, window=VSA_SQUAT_PERCENTILE_LOOKBACK)
+            
+            last_vol_ratio = float(vol_ratio.iloc[-1]) if not pd.isna(vol_ratio.iloc[-1]) else 0.0
+            last_eff_pctile = float(eff_pctile.iloc[-1]) if not pd.isna(eff_pctile.iloc[-1]) else 100.0
+            
+            if last_vol_ratio > VSA_SQUAT_VOL_RATIO and last_eff_pctile <= VSA_SQUAT_EFFICIENCY_PERCENTILE:
+                return WaitEntry(
+                    ticker=ticker,
+                    condition="vsa_squat_candle",
+                    details={
+                        "volume_ratio": round(last_vol_ratio, 2),
+                        "efficiency_percentile": round(last_eff_pctile, 2),
+                        "price": round(float(df["Close"].iloc[-1]), 2),
+                    },
+                )
+
         return None
 
     def _check_fvg_approach(
@@ -505,8 +556,31 @@ class MasterScanner:
         # Pick the highest-priority signal (ties broken by score)
         best = max(signals, key=lambda s: (s.priority, s.score))
 
+        from core.predictor import SyntheticFlowPredictor, VolatilityProjector
+        from core.indicators import closing_range
+
+        # Phase 5: Predictive Veto
+        predicted_return = SyntheticFlowPredictor().predict_next_return(df)
+        if predicted_return is not None and predicted_return < 0:
+            logger.debug("[%s] VETOED %s: Predictor forecasts negative return (%.2f%%)", ticker, best.engine, predicted_return * 100)
+            return None
+
         # Enrich with risk details
         details = dict(best.details)
+        
+        # Phase 5 Enriched Details
+        if predicted_return is not None:
+            details["predicted_return"] = round(predicted_return, 4)
+            
+        boundaries = VolatilityProjector.project(df)
+        if boundaries:
+            details["projected_upper"] = round(boundaries[0], 2)
+            details["projected_lower"] = round(boundaries[1], 2)
+            
+        cr_series = closing_range(df)
+        last_cr = float(cr_series.iloc[-1]) if not pd.isna(cr_series.iloc[-1]) else 0.5
+        details["closing_range"] = round(last_cr, 2)
+
         try:
             from config.settings import ATR_PERIOD, DEFAULT_CAPITAL
             atr_series = atr(df, period=ATR_PERIOD)
