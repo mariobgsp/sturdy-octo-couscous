@@ -148,7 +148,7 @@ VCLR_MIN_BODY_PCT: float = 1.5           # Body size > 1.5% of price (not a doji
 # ─── Phase 4: Risk Management ────────────────────────────────────────────────
 
 # Default starting capital (IDR)
-DEFAULT_CAPITAL: float = 100_000_000  # IDR 100 Million
+DEFAULT_CAPITAL: float = 5_000_000  # IDR 5 Million
 
 # Maximum risk per trade as % of total capital
 MAX_RISK_PER_TRADE_PCT: float = 2.0
