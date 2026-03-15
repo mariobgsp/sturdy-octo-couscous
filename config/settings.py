@@ -139,6 +139,11 @@ RIDGE_CV_SPLITS: int = 5
 RIDGE_LOOKAHEAD: int = 5
 RIDGE_TRAIN_WINDOW: int = 252 # 1 year data roughly
 
+# Engine 5: Volume Climax Reversal (VCLR)
+VCLR_VOLUME_RATIO: float = 3.0           # Volume must be > 300% of 20-day avg
+VCLR_CLOSING_RANGE_MAX: float = 0.25     # Closing range < 0.25 (closed near the low)
+VCLR_MIN_BODY_PCT: float = 1.5           # Body size > 1.5% of price (not a doji)
+
 
 # ─── Phase 4: Risk Management ────────────────────────────────────────────────
 

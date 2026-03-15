@@ -16,7 +16,9 @@ and the one-time IHSG composite fetch for regime detection).
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -135,6 +137,7 @@ class MasterScanner:
     def __init__(self, store: ParquetStore) -> None:
         self._store = store
         self._risk_manager = RiskManager()
+        self._earnings_lock = threading.Lock()
 
     # ── Main Scan Pipeline ────────────────────────────────────────────────
 
@@ -187,71 +190,37 @@ class MasterScanner:
                 )
 
         # Candidates that pass all Avoid filters
-        survivors: list[tuple[str, pd.DataFrame]] = []
+        trade_candidates: list[TradeEntry] = []
 
         logger.info("Scanning %d tickers... Regime: %s", total, regime.regime.value)
 
-        for i, ticker in enumerate(tickers, start=1):
-            if i % 100 == 0:
-                logger.info("  [%d/%d] Processing...", i, total)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = {
+                executor.submit(self._process_ticker, ticker, regime, check_earnings): ticker
+                for ticker in tickers
+            }
 
-            # Load data
-            df = self._store.load(ticker)
-            if df is None or df.empty:
-                result.skipped.append(ticker)
-                continue
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
+                ticker = futures[future]
+                completed += 1
+                if completed % 100 == 0:
+                    logger.info("  [%d/%d] Processing...", completed, total)
 
-            # Flatten MultiIndex columns if present
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            # ── AVOID FILTERS ────────────────────────────────────────
-            avoid_reason = self._run_avoid_filters(df, ticker)
-            if avoid_reason:
-                result.avoid.append(AvoidEntry(ticker=ticker, reason=avoid_reason))
-                # Track which filter caught it
-                for key in avoid_counts:
-                    if key in avoid_reason:
-                        avoid_counts[key] += 1
-                        break
-                continue
-
-            survivors.append((ticker, df))
-
-        # ── EARNINGS PROXIMITY (optional, only for survivors) ────────
-        if check_earnings:
-            logger.info(
-                "Checking earnings proximity for %d survivors...",
-                len(survivors),
-            )
-            filtered_survivors: list[tuple[str, pd.DataFrame]] = []
-            for ticker, df in survivors:
-                if self._filter_earnings_proximity(ticker):
-                    result.avoid.append(
-                        AvoidEntry(
-                            ticker=ticker,
-                            reason="earnings_proximity: event within 48h",
-                        )
-                    )
-                    avoid_counts["earnings_proximity"] += 1
-                else:
-                    filtered_survivors.append((ticker, df))
-                time.sleep(1.0)  # Rate limit calendar lookups
-            survivors = filtered_survivors
-
-        # ── WAIT & TRADE BUCKETS ──────────────────────────────────────
-        trade_candidates: list[TradeEntry] = []
-
-        for ticker, df in survivors:
-            wait_entry = self._run_wait_filters(df, ticker)
-            if wait_entry:
-                result.wait.append(wait_entry)
-                continue
-
-            # Stock passed both Avoid and Wait — run entry engines
-            trade_entry = self._run_engines(df, ticker, regime)
-            if trade_entry:
-                trade_candidates.append(trade_entry)
+                try:
+                    res = future.result()
+                    status = res["status"]
+                    if status == "skipped":
+                        result.skipped.append(res["ticker"])
+                    elif status == "avoid":
+                        result.avoid.append(res["entry"])
+                        avoid_counts[res["avoid_reason_key"]] += 1
+                    elif status == "wait":
+                        result.wait.append(res["entry"])
+                    elif status == "trade":
+                        trade_candidates.append(res["entry"])
+                except Exception as e:
+                    logger.error("[%s] Error processing ticker: %s", ticker, e)
 
         # ── RANK AND SELECT TOP TRADE PICKS ───────────────────────────
         trade_candidates.sort(key=lambda e: e.score, reverse=True)
@@ -278,6 +247,53 @@ class MasterScanner:
 
         logger.info("Scan complete. %s", result.summary())
         return result
+
+    def _process_ticker(self, ticker: str, regime: RegimeSnapshot, check_earnings: bool) -> dict:
+        """Process a single ticker, returning a dict of results."""
+        df = self._store.load(ticker)
+        if df is None or df.empty:
+            return {"status": "skipped", "ticker": ticker}
+
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # ── AVOID FILTERS ────────────────────────────────────────
+        avoid_reason = self._run_avoid_filters(df, ticker)
+        if avoid_reason:
+            key = "insufficient_data"
+            for k in ["low_adtv", "penny_stock", "below_sma200", "earnings_proximity", "insufficient_data"]:
+                if k in avoid_reason:
+                    key = k
+                    break
+            return {
+                "status": "avoid",
+                "entry": AvoidEntry(ticker=ticker, reason=avoid_reason),
+                "avoid_reason_key": key
+            }
+
+        # ── EARNINGS PROXIMITY ───────────────────────────────────
+        if check_earnings:
+            with self._earnings_lock:
+                has_earnings = self._filter_earnings_proximity(ticker)
+                time.sleep(1.0)  # Rate limit calendar lookups
+            if has_earnings:
+                return {
+                    "status": "avoid",
+                    "entry": AvoidEntry(ticker=ticker, reason="earnings_proximity: event within 48h"),
+                    "avoid_reason_key": "earnings_proximity"
+                }
+
+        # ── WAIT & TRADE BUCKETS ──────────────────────────────────────
+        wait_entry = self._run_wait_filters(df, ticker)
+        if wait_entry:
+            return {"status": "wait", "entry": wait_entry}
+
+        trade_entry = self._run_engines(df, ticker, regime)
+        if trade_entry:
+            return {"status": "trade", "entry": trade_entry}
+
+        return {"status": "none", "ticker": ticker}
 
     # ══════════════════════════════════════════════════════════════════════
     # AVOID FILTERS

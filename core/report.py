@@ -256,6 +256,18 @@ def generate_html_report(
 
   .avoid-summary {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }}
   .avoid-chip {{ background: #2a2d37; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; color: #aaa; }}
+
+  .avoid-donut-row {{ display: flex; align-items: center; gap: 24px; margin-top: 12px; flex-wrap: wrap; }}
+  .donut {{ width: 120px; height: 120px; border-radius: 50%; position: relative; flex-shrink: 0; }}
+  .donut-hole {{ width: 70px; height: 70px; background: #1a1d27; border-radius: 50%; position: absolute; top: 25px; left: 25px; display: flex; align-items: center; justify-content: center; }}
+  .donut-hole span {{ color: #fff; font-weight: 700; font-size: 1.1rem; }}
+  .donut-legend {{ display: flex; flex-direction: column; gap: 6px; }}
+  .legend-item {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: #ccc; }}
+  .legend-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
+
+  .field-value.predicted {{ color: #64b5f6; }}
+  .field-value.positive {{ color: #4caf50; }}
+  .field-value.negative {{ color: #f44336; }}
 </style>
 </head>
 <body>
@@ -270,11 +282,12 @@ def generate_html_report(
     IHSG Close: {regime_snapshot.close:,.0f} &nbsp;|&nbsp;
     SMA(50): {regime_snapshot.sma_short:,.0f} &nbsp;|&nbsp;
     SMA(200): {regime_snapshot.sma_long:,.0f} &nbsp;|&nbsp;
-    ATR(14): {regime_snapshot.atr_value:,.0f}
+    ATR(14): {regime_snapshot.atr_value:,.0f} &nbsp;|&nbsp;
+    Hurst: {regime_snapshot.hurst_value:.2f}
   </div>
   <div class="regime-engines">
-    Active: {', '.join(e for e in ['FVG Pullback', 'Momentum Breakout', 'B.O.W.']
-                       if regime_snapshot.allows_engine(['fvg_pullback', 'momentum_breakout', 'buying_on_weakness'][['FVG Pullback', 'Momentum Breakout', 'B.O.W.'].index(e)])) or 'None'}
+    Active: {', '.join(e for e in ['FVG Pullback', 'Momentum Breakout', 'B.O.W.', 'Wyckoff Spring', 'Vol Climax Reversal']
+                       if regime_snapshot.allows_engine(['fvg_pullback', 'momentum_breakout', 'buying_on_weakness', 'wyckoff_spring', 'volume_climax_reversal'][['FVG Pullback', 'Momentum Breakout', 'B.O.W.', 'Wyckoff Spring', 'Vol Climax Reversal'].index(e)])) or 'None'}
   </div>
 </div>
 
@@ -321,13 +334,7 @@ def generate_html_report(
 {'<table><tr><th>Ticker</th><th>Condition</th><th>Details</th></tr>' + wait_rows + '</table>' if wait_rows else '<div class="card no-signal">No stocks in Wait bucket</div>'}
 
 <div class="section-title">Avoid Summary ({len(scan_result.avoid)})</div>
-<div class="avoid-summary">
-  <div class="avoid-chip">Low ADTV: {avoid_bk.get('low_adtv', 0)}</div>
-  <div class="avoid-chip">Penny: {avoid_bk.get('penny_stock', 0)}</div>
-  <div class="avoid-chip">Below SMA200: {avoid_bk.get('below_sma200', 0)}</div>
-  <div class="avoid-chip">Earnings: {avoid_bk.get('earnings_proximity', 0)}</div>
-  <div class="avoid-chip">No Data: {avoid_bk.get('insufficient_data', 0)}</div>
-</div>
+{_html_avoid_donut(avoid_bk, len(scan_result.avoid))}
 
 </div>
 </body>
@@ -384,6 +391,36 @@ def _html_trade_card(rank: int, entry, d: dict) -> str:
     if "risk_amount" in d:
         risk_html = f"<div class='field-value risk'>IDR {d['risk_amount']:,.0f} ({d.get('risk_pct', '?')}%)</div>"
 
+    # Phase 5 predictive fields
+    predicted_html = ""
+    if "predicted_return" in d:
+        pr = d["predicted_return"]
+        pr_class = "positive" if pr >= 0 else "negative"
+        predicted_html = f"""
+        <div class="card-field">
+          <div class="field-label">Predicted 5d Return</div>
+          <div class="field-value {pr_class}">{pr * 100:+.2f}%</div>
+        </div>"""
+
+    projection_html = ""
+    if "projected_upper" in d and "projected_lower" in d:
+        projection_html = f"""
+        <div class="card-field">
+          <div class="field-label">ATR Projection</div>
+          <div class="field-value predicted">{d['projected_lower']:,.0f} — {d['projected_upper']:,.0f}</div>
+        </div>"""
+
+    cr_html = ""
+    if "closing_range" in d:
+        cr_val = d["closing_range"]
+        cr_label = "Strong" if cr_val > 0.7 else "Weak" if cr_val < 0.3 else "Neutral"
+        cr_class = "positive" if cr_val > 0.7 else "negative" if cr_val < 0.3 else "predicted"
+        cr_html = f"""
+        <div class="card-field">
+          <div class="field-label">Closing Range</div>
+          <div class="field-value {cr_class}">{cr_val:.2f} ({cr_label})</div>
+        </div>"""
+
     return f"""
     <div class="card">
       <div class="card-header">
@@ -415,5 +452,56 @@ def _html_trade_card(rank: int, entry, d: dict) -> str:
           <div class="field-label">Score</div>
           <div class="field-value">{entry.score:.2f}</div>
         </div>
+        {predicted_html}
+        {projection_html}
+        {cr_html}
       </div>
     </div>"""
+
+
+def _html_avoid_donut(avoid_bk: dict, total_avoid: int) -> str:
+    """Generate a CSS-only donut chart for the Avoid breakdown."""
+    categories = [
+        ("Low ADTV", avoid_bk.get("low_adtv", 0), "#f44336"),
+        ("Penny", avoid_bk.get("penny_stock", 0), "#ff9800"),
+        ("Below SMA200", avoid_bk.get("below_sma200", 0), "#2196f3"),
+        ("Earnings", avoid_bk.get("earnings_proximity", 0), "#9c27b0"),
+        ("No Data", avoid_bk.get("insufficient_data", 0), "#607d8b"),
+    ]
+
+    if total_avoid == 0:
+        return '<div class="card no-signal">No stocks avoided</div>'
+
+    # Build conic-gradient segments
+    segments = []
+    cumulative = 0.0
+    for _, count, color in categories:
+        if count > 0:
+            pct = (count / total_avoid) * 100.0
+            segments.append(f"{color} {cumulative:.1f}% {cumulative + pct:.1f}%")
+            cumulative += pct
+
+    gradient = f"conic-gradient({', '.join(segments)})" if segments else "conic-gradient(#2a2d37 0% 100%)"
+
+    # Legend items
+    legend_items = ""
+    for label, count, color in categories:
+        if count > 0:
+            pct = (count / total_avoid) * 100.0
+            legend_items += (
+                f'<div class="legend-item">'
+                f'<div class="legend-dot" style="background:{color}"></div>'
+                f'{label}: {count} ({pct:.0f}%)'
+                f'</div>\n'
+            )
+
+    return f"""
+    <div class="avoid-donut-row">
+      <div class="donut" style="background: {gradient}">
+        <div class="donut-hole"><span>{total_avoid}</span></div>
+      </div>
+      <div class="donut-legend">
+        {legend_items}
+      </div>
+    </div>"""
+

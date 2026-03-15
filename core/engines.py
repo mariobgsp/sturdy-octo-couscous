@@ -35,12 +35,16 @@ from config.settings import (
     BREAKOUT_VOLUME_THRESHOLD,
     FVG_LOW_VOLUME_RATIO,
     REGIME_SMA_SHORT,
+    VCLR_CLOSING_RANGE_MAX,
+    VCLR_MIN_BODY_PCT,
+    VCLR_VOLUME_RATIO,
     WYCKOFF_SPRING_LOOKBACK,
     WYCKOFF_SPRING_VOLUME_RATIO,
 )
 from core.indicators import (
     atr,
     bollinger_bands,
+    closing_range,
     detect_fvg,
     macd,
     rsi,
@@ -546,6 +550,102 @@ class WyckoffSpringEngine(BaseEngine):
 
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ENGINE 5: VOLUME CLIMAX REVERSAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class VolumeClimaxReversalEngine(BaseEngine):
+    """
+    Volume Climax Reversal Entry Engine.
+
+    Identifies extreme volume exhaustion events where a massive volume spike
+    (>300% of 20-day average) occurs with a bearish wide-range candle
+    (Closing Range < 0.25), suggesting selling climax exhaustion.
+
+    The entry triggers when today's price action confirms demand absorption:
+    close > previous close AND close > open (bullish candle).
+
+    Conditions:
+    1. Previous day: Volume > 300% of 20-day average (climax volume)
+    2. Previous day: Closing Range < 0.25 (closed near the low)
+    3. Previous day: Body size > 1.5% of price (real move, not a doji)
+    4. Today: Close > Previous Close AND Close > Open (bullish reversal)
+
+    Priority: 2
+    Allowed regimes: BULL, CAUTION
+    """
+
+    name = "volume_climax_reversal"
+    priority = 2
+
+    def scan(
+        self,
+        df: pd.DataFrame,
+        ticker: str,
+        regime: RegimeSnapshot,
+    ) -> EntrySignal | None:
+        if not regime.allows_engine(self.name):
+            return None
+
+        if len(df) < 25:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        last_close = float(last["Close"])
+        last_open = float(last["Open"])
+        prev_close = float(prev["Close"])
+        prev_open = float(prev["Open"])
+        prev_high = float(prev["High"])
+        prev_low = float(prev["Low"])
+
+        # 1. Previous day volume climax (> 300% of 20-day average)
+        vol_ratio_series = volume_ratio(df, period=20)
+        prev_vol_ratio = float(vol_ratio_series.iloc[-2]) if not pd.isna(vol_ratio_series.iloc[-2]) else 1.0
+
+        if prev_vol_ratio < VCLR_VOLUME_RATIO:
+            return None
+
+        # 2. Previous day closing range < 0.25 (closed near the low = bearish exhaustion)
+        cr_series = closing_range(df)
+        prev_cr = float(cr_series.iloc[-2]) if not pd.isna(cr_series.iloc[-2]) else 0.5
+
+        if prev_cr >= VCLR_CLOSING_RANGE_MAX:
+            return None
+
+        # 3. Previous day body size > 1.5% (real move, not a doji)
+        body_pct = abs(prev_close - prev_open) / prev_close * 100.0
+        if body_pct < VCLR_MIN_BODY_PCT:
+            return None
+
+        # 4. Today's reversal confirmation: close > prev_close AND close > open
+        if not (last_close > prev_close and last_close > last_open):
+            return None
+
+        # Signal confirmed
+        atr_series = atr(df, period=ATR_PERIOD)
+        last_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+        last_vol_ratio = float(vol_ratio_series.iloc[-1]) if not pd.isna(vol_ratio_series.iloc[-1]) else 1.0
+
+        score = self.priority * prev_vol_ratio
+
+        return EntrySignal(
+            engine=self.name,
+            ticker=ticker,
+            price=round(last_close, 2),
+            score=round(score, 2),
+            priority=self.priority,
+            details={
+                "climax_vol_ratio": round(prev_vol_ratio, 2),
+                "climax_closing_range": round(prev_cr, 2),
+                "climax_body_pct": round(body_pct, 2),
+                "reversal_vol_ratio": round(last_vol_ratio, 2),
+                "atr": round(last_atr, 2),
+            },
+        )
+
+
 # ─── Engine Registry ─────────────────────────────────────────────────────────
 
 # Ordered by priority (highest first) — this is the evaluation order
@@ -554,6 +654,7 @@ ALL_ENGINES: list[BaseEngine] = [
     MomentumBreakoutEngine(),
     BuyingOnWeaknessEngine(),
     WyckoffSpringEngine(),
+    VolumeClimaxReversalEngine(),
 ]
 
 

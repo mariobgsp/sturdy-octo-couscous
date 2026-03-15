@@ -33,6 +33,7 @@ from config.settings import (
     STOP_LOSS_ATR_MULTIPLIER,
     TRADE_BUCKET_MAX_PICKS,
     TRAILING_STOP_ATR_MULTIPLIER,
+    BRACKET_ORDER_TP_ATR_MULTIPLIER,
 )
 from core.database import ParquetStore
 from core.engines import run_all_engines
@@ -82,6 +83,7 @@ class OpenBacktestPosition:
     raw_entry: float     # before costs
     shares: int
     stop_loss: float
+    take_profit: float
     trailing_stop: float
     highest_high: float
     risk_per_share: float
@@ -318,6 +320,7 @@ class Backtester:
                 bar = df.loc[today]
                 current_high = float(bar["High"])
                 current_low = float(bar["Low"])
+                current_open = float(bar["Open"])
 
                 # Update highest high
                 if current_high > pos.highest_high:
@@ -333,11 +336,24 @@ class Backtester:
                     if new_stop > pos.trailing_stop:
                         pos.trailing_stop = new_stop
 
-                # Check stop hit
+                # Check exits
+                # Most conservative approach: If both SL and TP hit intraday, assume SL hit first.
+                
+                # 1. Stop Loss Hit
                 if current_low <= pos.trailing_stop:
-                    exit_price = pos.trailing_stop  # stopped out at stop level
+                    # Gap down slippage: If it opened below our stop, we get filled at the open
+                    exit_price = min(pos.trailing_stop, current_open)
                     tickers_to_close.append(
                         (ticker, exit_price, "trailing_stop")
+                    )
+                    continue # Skip TP check if stopped out
+                    
+                # 2. Take Profit Hit
+                if current_high >= pos.take_profit:
+                    # Gap up slippage: If it opened above our TP, we get filled at the open
+                    exit_price = max(pos.take_profit, current_open)
+                    tickers_to_close.append(
+                        (ticker, exit_price, "take_profit")
                     )
 
             # Close stopped-out positions
@@ -471,6 +487,10 @@ class Backtester:
                     trailing = self._risk_mgr.calculate_trailing_stop(
                         float(df_slice["High"].iloc[-1]), current_atr
                     )
+                    
+                    take_profit = round(
+                        actual_entry + (current_atr * BRACKET_ORDER_TP_ATR_MULTIPLIER), 2
+                    )
 
                     open_positions[ticker] = OpenBacktestPosition(
                         ticker=ticker,
@@ -480,6 +500,7 @@ class Backtester:
                         raw_entry=raw_entry,
                         shares=shares,
                         stop_loss=stop,
+                        take_profit=take_profit,
                         trailing_stop=max(stop, trailing),
                         highest_high=float(df_slice["High"].iloc[-1]),
                         risk_per_share=risk_per_share,
